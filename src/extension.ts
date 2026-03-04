@@ -3,6 +3,27 @@ import { GitExtension, Repository } from "./git";
 import { fetchSettings } from "./settings";
 import * as path from 'path';
 
+const LAST_SELECTED_REPOSITORY_PATH_KEY = "conventional-branch.lastSelectedRepositoryPath";
+
+function getLastSelectedRepositoryPath(context: vscode.ExtensionContext): string | undefined {
+  try {
+    return context.globalState.get<string>(LAST_SELECTED_REPOSITORY_PATH_KEY);
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveLastSelectedRepositoryPath(
+  context: vscode.ExtensionContext,
+  repositoryPath: string
+) {
+  try {
+    await context.globalState.update(LAST_SELECTED_REPOSITORY_PATH_KEY, repositoryPath);
+  } catch {
+    // Ignore persistence failures to avoid breaking branch creation flow
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   let disposable = vscode.commands.registerCommand(
     "conventional-branch.newBranch",
@@ -42,7 +63,6 @@ export function activate(context: vscode.ExtensionContext) {
           };
         });
 
-
         const selectedFolder = await vscode.window.showQuickPick(workspaceFolders, {
           placeHolder: "Select a workspace folder",
           ignoreFocusOut: true
@@ -69,7 +89,52 @@ export function activate(context: vscode.ExtensionContext) {
           );
           return;
         }
-        repository = git.repositories[0];
+
+        if (git.repositories.length === 0) {
+          vscode.window.showErrorMessage(
+            "No Git repositories found in the workspace. Please open a folder with a Git repository."
+          );
+          return;
+        }
+
+        if (git.repositories.length > 1) {
+          const lastSelectedRepositoryPath = getLastSelectedRepositoryPath(context);
+          const repositories = git.repositories.map((repo) => ({
+            label: path.basename(repo.rootUri.fsPath),
+            description: repo.state.HEAD ? repo.state.HEAD.name : "No branch",
+            detail: repo.rootUri.fsPath,
+            repository: repo,
+          }));
+
+          repositories.sort((a, b) => {
+            const aIsLastSelected = a.repository.rootUri.fsPath === lastSelectedRepositoryPath;
+            const bIsLastSelected = b.repository.rootUri.fsPath === lastSelectedRepositoryPath;
+
+            if (aIsLastSelected === bIsLastSelected) {
+              return 0;
+            }
+
+            return aIsLastSelected ? -1 : 1;
+          });
+
+          const selectedRepository = await vscode.window.showQuickPick(repositories, {
+            placeHolder: "Select a Git repository",
+            ignoreFocusOut: true
+          });
+
+          if (!selectedRepository) {
+            return;
+          }
+
+          repository = selectedRepository.repository;
+          await saveLastSelectedRepositoryPath(
+            context,
+            selectedRepository.repository.rootUri.fsPath
+          );
+        } else {
+          repository = git.repositories[0];
+          await saveLastSelectedRepositoryPath(context, repository.rootUri.fsPath);
+        }
       };
 
       // read the format from settings
